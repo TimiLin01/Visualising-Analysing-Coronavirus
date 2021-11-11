@@ -1,0 +1,527 @@
+---
+title: "Coronavirus in the UK"
+author: "Jia Xin Lin"
+output: html_document
+urlcolor: blue
+bibliography: shiny_covid.bib
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r SetupImport, echo = FALSE, results = FALSE, message = FALSE, warning = FALSE}
+library(shiny)
+library(MASS)
+library(rio)
+library(readxl)
+library(ggplot2)
+library(scales)
+library(shinythemes)
+library(processx)
+library(coronavirus)
+library(tidyverse)
+library(dplyr)
+library(tidycovid19)
+library(ggrepel)
+library(gghighlight)
+library(zoo)
+library(lubridate)
+library(splines)
+Sys.setenv("LANGUAGE"="En")
+Sys.setlocale("LC_ALL", "English")
+CovidData <- download_merged_data(silent = TRUE, cached = TRUE)
+CovidData <- CovidData %>%
+  mutate(date = as.Date(parse_date_time(CovidData$date,orders=c("y","ym","ymd", "dmy"))))
+UkData <- filter(CovidData, iso3c == "GBR")
+firstdiff <- function(x) {
+  shifted <- c(0,x[1:(length(x)-1)])
+  result = x-shifted
+  which_negative = which(result<0)
+  result[which_negative] = NA
+  return(result)
+}
+UkData <- UkData %>%
+  mutate(day_date = yday(date),
+         daily_confirmed = firstdiff(confirmed),
+         daily_recovered = firstdiff(recovered),
+         daily_deaths = firstdiff(deaths),
+         daily_vaccine = firstdiff(total_vaccinations),
+         ave_daily_confirmed = rollmean(daily_confirmed, 7, na.pad=TRUE, align="right"),
+         ave_daily_recovered = rollmean(daily_recovered, 7, na.pad=TRUE, align="right"),
+         ave_daily_deaths = rollmean(daily_deaths, 7, na.pad=TRUE, align="right"),
+         ave_daily_vaccine = rollmean(daily_vaccine, 7, na.pad=TRUE, align="right"),
+         ave_confirmed = rollmean(confirmed, 7, na.pad=TRUE, align="right"),
+         ave_recovered = rollmean(recovered, 7, na.pad=TRUE, align="right"),
+         ave_deaths = rollmean(deaths, 7, na.pad=TRUE, align="right"),
+         ave_vaccine = rollmean(total_vaccinations, 7, na.pad=TRUE, align="right"))
+```
+
+The coronavirus is still spreading around the world today, which affects more than 200 countries. This report aims to examine the COVID-19 in the UK. The graphs and tables in this report uses data from the `tidycovid19` package, which collects data from Johns Hopkins University Center for Systems Science and Engineering (JHU CCSE) Coronavirus repository,  Google COVID-19 Community Mobility Reports and many other reliable resources. More details can be found on this [website](https://joachim-gassen.github.io/tidycovid19/).
+
+
+## Confirmed, recovered and dead cases
+
+```{r Page1, echo=FALSE, message = FALSE, warning = FALSE}
+mainPanel(width = 15,
+      selectInput("class", "Plot:",
+                   c("Cases", "Recovered", "Deaths", "Vaccination")
+      ),
+      conditionalPanel("input.class === 'Cases'",
+                    h4("Daily and Cumulative Cases in the UK"),
+                    p("This plot shows the exact number of daily and cumulative cases with the 7-day moving average line, which shows the trend." )
+      ),
+      conditionalPanel("input.class === 'Recovered'",
+                     h4("Daily and Cumulative Testing in the UK"),
+                     p("This plot shows the exact number of daily and cumulative testing with the 7-day moving average line, which shows the trend.")
+      ),
+      conditionalPanel("input.class === 'Deaths'",
+                     h4("Daily and Cumulative deaths"),
+                     p("This bar chart gives an overall idea of the daily and cumulative number of deaths with the 7-day moving average line, which shows the trend.")
+      ),
+      conditionalPanel("input.class === 'Vaccination'",
+                     h4("Daily and Cumulative vaccinations"),
+                     p("This bar chart gives an overall idea of the daily and cumulative number of vaccinations with the 7-day moving average line, which shows the trend.")
+     ),
+      tabsetPanel(
+        tabPanel("Daily", plotOutput("plot1", height = 500), textOutput("analysis1")), 
+        tabPanel("Cumulative", plotOutput("plot2", height = 500), textOutput("analysis2"))
+     )
+ )
+```
+
+```{r Plots1, echo = FALSE, results = FALSE, message = FALSE, warning = FALSE}
+Sys.setlocale("LC_ALL", "English")
+CasePlotDa <- UkData %>%
+        filter(!is.na(daily_confirmed), !is.na(ave_daily_confirmed)) %>%
+        ggplot(aes(x = date)) + 
+        geom_bar(aes(y = daily_confirmed, fill = "Number of cases"),stat = "identity") +
+        xlab("Date") + ylab("Daily Cases") +
+        ggtitle("Cases in UK (2020/21)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=ave_daily_confirmed, colour = "Cases (7-day average)"), size = 1.2, alpha = 0.85) +
+        scale_fill_manual(name = "", values = c("Number of cases" = "orange2")) +
+        scale_colour_manual(name = "", values = c("Cases (7-day average)" = "sienna")) +
+        scale_x_date(date_breaks = "2 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+
+RePlotDa <- UkData %>%
+        filter(!is.na(daily_recovered), !is.na(ave_daily_recovered)) %>%
+        ggplot(aes(x = date)) + 
+        geom_bar(aes(y = daily_recovered, fill = "Numbere of Recovery"), stat = "identity" ) +
+        xlab("Date") + ylab("Daily Recovery") +
+        ggtitle("Recovery in UK (2020/21)") +
+        geom_line(aes(y=ave_daily_recovered, colour = "Recovery (7-day average)"), size = 1.2, alpha = 0.7) +
+        theme(plot.title = element_text(lineheight=.8, face="bold")) +
+        theme(axis.text.y = element_text(size=10)) +
+        scale_fill_manual(name = "", values = c("Numbere of Recovery" = "steelblue3"))+
+        scale_colour_manual(name = "", values = c("Recovery (7-day average)" = "navy")) +
+        scale_x_date(date_breaks = "2 month",
+                     date_minor_breaks = "1 month",
+                     date_labels = "%b")  +
+        scale_y_continuous(labels = comma_format(big.mark = "." , 
+                                                 decimal.mark = ","))
+
+DeathPlotDa <- UkData %>%
+        filter(!is.na(daily_deaths), !is.na(ave_daily_deaths)) %>%
+        ggplot(aes(x = date))+
+        geom_bar(aes(y = daily_deaths, fill = "Deaths"),stat = "identity", position = "stack") +
+        geom_line(aes(y=ave_daily_deaths, colour = "Deaths (7-day average)"), size = 1.2, alpha = 0.9) +
+        scale_x_date(date_breaks = "2 month",
+                     date_minor_breaks = "1 month",
+                     date_labels = "%b")  +
+        xlab("Date")+ylab("Daily Deaths") +
+        ggtitle("Deaths within 28 days of positive test by date of death (UK, 2020/21)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))+
+        scale_fill_manual(name = "", values = c("Deaths" = "firebrick3"))+
+        scale_colour_manual(name = "", values = c("Deaths (7-day average)" = "coral4"))
+
+VacPlotDa <- UkData %>%
+        filter(!is.na(daily_vaccine), !is.na(ave_daily_vaccine)) %>%
+        ggplot(aes(x = date))+
+        geom_bar(aes(y = daily_vaccine, fill = "Number of Vaccinations"), stat = "identity", position = "stack") +
+        geom_line(aes(y=ave_daily_vaccine, colour = "Vaccinations (7-day average)"), size = 1.2, alpha = 0.7) +
+        scale_x_date(date_breaks = "2 month",
+                     date_minor_breaks = "1 month",
+                     date_labels = "%b")  +
+        xlab("Date")+ylab("Daily numbers of vaccinations") +
+        scale_fill_manual(name = "", values = c("Number of Vaccinations" = "steelblue"))+
+        scale_colour_manual(name = "", values = c("Vaccinations (7-day average)" = "navy"))+
+        ggtitle("Vaccinations given against to the COVID-19 (UK, 2020/21)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))
+```
+
+```{r Plot2, echo = FALSE, results = FALSE, message = FALSE, warning = FALSE}
+CasePlotCum <- UkData %>%
+          filter(!is.na(confirmed), !is.na(ave_confirmed)) %>%
+          ggplot(aes(x = date)) + 
+          geom_bar(aes(y = confirmed, fill = "Number of cases"),stat = "identity") +
+          xlab("Date") + ylab("Cumulative Cases") +
+          ggtitle("Cases in UK (2020/21)") +
+          theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+          geom_line(aes(y=ave_confirmed, colour = "Cases (7-day average)"), size = 1.2, alpha = 0.85) +
+          scale_fill_manual(name = "", values = c("Number of cases" = "orange2")) +
+          scale_colour_manual(name = "", values = c("Cases (7-day average)" = "sienna"))+
+          scale_x_date(date_breaks = "2 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+
+RePlotCum <- UkData %>%
+          filter(!is.na(recovered), !is.na(ave_recovered)) %>%
+          ggplot(aes(x = date)) + 
+          geom_bar(aes(y = recovered, fill = "Numbere of Recovery"), stat = "identity" ) +
+          xlab("Date") + ylab("Cumulative Recovery") +
+          ggtitle("Recovery in UK (2021)") +
+          geom_line(aes(y=ave_recovered, colour = "Recovery (7-day average)"), size = 1.2, alpha = 0.7) +
+          theme(plot.title = element_text(lineheight=.8, face="bold")) +
+          theme(axis.text.y = element_text(size=10)) +
+          scale_fill_manual(name = "", values = c("Numbere of Recovery" = "steelblue3"))+
+          scale_colour_manual(name = "", values = c("Recovery (7-day average)" = "navy")) +
+          scale_x_date(date_breaks = "2 month",
+                       date_minor_breaks = "1 month",
+                       date_labels = "%b")  +
+          scale_y_continuous(labels = comma_format(big.mark = "." , 
+                                                   decimal.mark = ","))
+
+DeathPlotCum <- UkData %>%
+            filter(!is.na(deaths), !is.na(ave_deaths)) %>%
+            ggplot(aes(x = date))+
+            geom_bar(aes(y = deaths ,fill = "Deaths"),stat = "identity", position = "stack") +
+            geom_line(aes(y=ave_deaths, colour = "Deaths (7-day average)"), size = 1.2, alpha = 0.9) +
+            scale_x_date(date_breaks = "2 month",
+                         date_minor_breaks = "1 month",
+                         date_labels = "%b")  +
+            xlab("Date")+ylab("Cumulative Deaths") +
+            ggtitle("Deaths within 28 days of positive test by date of death (UK, 2020/21)") +
+            theme(plot.title = element_text(lineheight=.8, face="bold"))+
+            scale_fill_manual(name = "", values = c("Deaths" = "firebrick3"))+
+            scale_colour_manual(name = "", values = c("Deaths (7-day average)" = "darkred"))+
+            scale_y_continuous(labels = comma_format(big.mark = "." , 
+                                                     decimal.mark = ","))
+
+VacPlotCum <- UkData %>%
+            filter(!is.na(total_vaccinations), !is.na(ave_daily_vaccine)) %>%
+            ggplot(aes(x = date))+
+            geom_bar(aes(y = total_vaccinations, fill = "Number of Vaccinations"), stat = "identity", position = "stack") +
+            geom_line(aes(y=ave_vaccine, colour = "Vaccinations (7-day average)"), size = 1.2, alpha = 0.7) +
+            scale_x_date(date_breaks = "2 month",
+                         date_minor_breaks = "1 month",
+                         date_labels = "%b")  +
+            xlab("Date")+ylab("Cumulative numbers of vaccinations") +
+            scale_fill_manual(name = "", values = c("Number of Vaccinations" = "steelblue"))+
+            scale_colour_manual(name = "", values = c("Vaccinations (7-day average)" = "navy"))+
+            ggtitle("Vaccinations given against to the COVID-19 (UK, 2020/21)") +
+            theme(plot.title = element_text(lineheight=.8, face="bold"))+
+            scale_y_continuous(labels = comma_format(big.mark = "." , 
+                                                     decimal.mark = ","))
+```
+
+```{r Output1, echo = FALSE}
+output$plot1 <- renderPlot({
+    if (input$class == "Cases") {
+      print(CasePlotDa)
+    } else if (input$class == "Recovered") {
+      print(RePlotDa)
+    } else if (input$class == "Vaccination"){
+      print(VacPlotDa)
+    } else if (input$class == "Deaths"){
+      print(DeathPlotDa)
+    }
+  })
+
+output$plot2 <- renderPlot({
+    if (input$class == "Cases") {
+      print(CasePlotCum)
+    } else if (input$class == "Recovered") {
+      print(RePlotCum)
+    } else if (input$class == "Vaccination"){
+      print(VacPlotCum)
+    } else if (input$class == "Deaths"){
+      print(DeathPlotCum)
+    }
+  })
+
+output$analysis1 <- renderText({
+  if (input$class == "Cases") {
+      "From the plot, we can see the three major waves as a whole. The first wave is from February to July 2020, the second is from October 2020 to April 2021, and the third is still ongoing from June 2021."
+    } else if (input$class == "Recovered") {
+      ""
+    } else if (input$class == "Vaccination"){
+      ""
+    } else if (input$class == "Deaths"){
+      ""
+    }  
+})
+
+output$analysis2 <- renderText({
+  if (input$class == "Cases") {
+      ""
+    } else if (input$class == "Recovered") {
+      ""
+    } else if (input$class == "Vaccination"){
+      ""
+    } else if (input$class == "Deaths"){
+      ""
+    }  
+})
+```
+
+## Regression models for the Coronavirus data in the UK
+
+We are going to look at the confirmed cases, which is count data. Hence, by *Regression Models for Count Data in R* [@RegModel2007], it is recommended to use Poisson, geometric and negative-binomial regression models. In this report, we will try to fit our data with Poisson and negative-binomial models.
+
+Before we start, there are some concepts and notations we need to clarify:
+
+- Effective reproduction number ($R$): The number of secondary infections expected from a typical primary case in the population through which the disease is spreading, in this case, the COVID-19.
+  - if $R$ > 1: the number of infections will increase exponentially in time
+  - if $R$ < 1: the number of infections will decrease exponentially in time
+- Serial interval ($T_{C}$): Mean of the generation interval. In this case, our $T_{C}$ = 4 [@SerialInterval2020].
+- $I(t)$: The number of infected individual at time $t$, which is given by
+  $$I(t) = I(0)R^{\frac{t}{T_{C}}}$$ where $I(0)$ is the initial infected individuals number.
+Since $R$ is usually unknown, hence we can rewrite the above equation as:
+  $$I(t) = I(0)exp(rt)$$ and then $R = exp(rT_{C})$ with $r$ being a coefficient, we can obtain from the model summary. In addition, the number of infected individuals doubles after $time = log(2)/r$.
+
+```{r Page2, echo=FALSE, message = FALSE, warning = FALSE}
+mainPanel(width = 15,
+      selectInput("class2", "Waves:",
+                   c("First", "Second", "Third")
+      ),
+      conditionalPanel("input.class2 === 'First'",
+                    h4("First Wave in the UK (February - July 2020)"),
+                    p("These plots show how Poisson and negative-binomial models fits our first wave data.")
+      ),
+      conditionalPanel("input.class2 === 'Second'",
+                     h4("Second Wave in the UK (October 2020 - April 2021)"),
+                     p("These plots show how Poisson and negative-binomial models fits our sencond wave data.")
+      ),
+      conditionalPanel("input.class2 === 'Third'",
+                     h4("Third Wave in the UK (June 2021 - )"),
+                     p("These plots show how Poisson and negative-binomial models fits our third wave data.")
+      ),
+      tabsetPanel(
+        tabPanel("Poisson", plotOutput("plot3", height = 500), textOutput("analysis3")), 
+        tabPanel("Negative-Binomial", plotOutput("plot4", height = 500), textOutput("analysis4"))
+     )
+ )
+```
+
+```{r Poissonfit, echo=FALSE, message = FALSE, warning = FALSE}
+UKCasesData <- {UkData %>%
+    dplyr::select(date, day_date, daily_confirmed)}
+
+FirstWaveUkData <- {UKCasesData %>% 
+    filter( (date > as.Date("2020-02-01")) & (date < as.Date("2020-07-31")) )} %>%
+    filter(!is.na(daily_confirmed), !is.na(day_date))
+Poisson_fit1 <- glm(daily_confirmed ~ 1 + day_date + I(day_date^2) + I(log(day_date)), family = poisson, data = FirstWaveUkData)
+FirstWaveUkData$pred_poisson = predict(Poisson_fit1)
+PoissonCases1 <- {FirstWaveUkData %>% ggplot(aes(x = day_date, y = daily_confirmed))} +
+  xlab("Days") +
+  ylab("Number of new confirmed daily cases") +
+  geom_point() +
+  geom_line(aes(y = exp(pred_poisson)), size = 1) +
+  ggtitle("Regression plot for the number of new confirmed daily cases fitted with Poisson model",
+                       subtitle = "UK, February - July, 2020")
+
+SecondWaveUkData <- {UKCasesData %>% 
+    filter( (date > as.Date("2020-10-01")) & (date < as.Date("2021-04-30")) )} %>%
+    filter(!is.na(daily_confirmed), !is.na(day_date))
+Poisson_fit2 <- glm(daily_confirmed ~ 1 + day_date + I(day_date^2) + I(log(day_date)), family = poisson, data = SecondWaveUkData)
+SecondWaveUkData$pred_poisson = predict(Poisson_fit2)
+PoissonCases2 <- {SecondWaveUkData %>% ggplot(aes(x = day_date, y = daily_confirmed))} +
+  xlab("Days") +
+  ylab("Number of new confirmed daily cases") +
+  geom_point() +
+  geom_line(aes(y = exp(pred_poisson)), size = 1) +
+  ggtitle("Regression plot for the number of new confirmed daily cases fitted with Poisson model",
+                       subtitle = "UK, October 2020 - April 2021")
+
+ThirdWaveUkData <- {UKCasesData %>% 
+    filter( date > as.Date("2021-06-01"))} %>%
+    filter(!is.na(daily_confirmed), !is.na(day_date))
+Poisson_fit3 <- glm(daily_confirmed ~ 1 + day_date + I(day_date^2) + I(log(day_date)), family = poisson, data = ThirdWaveUkData)
+ThirdWaveUkData$pred_poisson = predict(Poisson_fit3)
+PoissonCases3 <- {ThirdWaveUkData %>% ggplot(aes(x = day_date, y = daily_confirmed))} +
+  xlab("Days") +
+  ylab("Number of new confirmed daily cases") +
+  geom_point() +
+  geom_line(aes(y = exp(pred_poisson)), size = 1) +
+  ggtitle("Regression plot for the number of new confirmed daily cases fitted with Poisson model",
+          subtitle = "UK, June 2021 - ")
+```
+
+```{r NBinomialfit, echo=FALSE, message = FALSE, warning = FALSE}
+NB_fit1 <- glm.nb(daily_confirmed ~ 1 + (day_date + I(day_date^2) + I(log(day_date)))^2, data = FirstWaveUkData)
+FirstWaveUkData$pred_nbinomial = predict(NB_fit1)
+NBCases1 <- {FirstWaveUkData %>% ggplot(aes(x = day_date, y = daily_confirmed))} +
+  xlab("Days") +
+  ylab("Number of new confirmed daily cases") +
+  geom_point() +
+  geom_line(aes(y = exp(pred_nbinomial)), size = 1) +
+  ggtitle("Regression plot for the number of new confirmed daily cases fitted with negative-binomial model",
+                       subtitle = "UK, February - July, 2020")
+
+NB_fit2 <- glm.nb(daily_confirmed ~ 1 + day_date + I(day_date^2) + I(log(day_date)), data = SecondWaveUkData)
+SecondWaveUkData$pred_nbinomial = predict(NB_fit2)
+NBCases2 <- {SecondWaveUkData %>% ggplot(aes(x = day_date, y = daily_confirmed))} +
+  xlab("Days") +
+  ylab("Number of new confirmed daily cases") +
+  geom_point() +
+  geom_line(aes(y = exp(pred_nbinomial)), size = 1) +
+  ggtitle("Regression plot for the number of new confirmed daily cases fitted with negative-binomial model",
+                       subtitle = "UK, October 2020 - April 2021")
+
+NB_fit3 <- glm.nb(daily_confirmed ~ 1 + day_date + I(day_date^2) + I(log(day_date)), data = ThirdWaveUkData)
+ThirdWaveUkData$pred_nbinomial = predict(NB_fit3)
+NBCases3 <- {ThirdWaveUkData %>% ggplot(aes(x = day_date, y = daily_confirmed))} +
+  xlab("Days") +
+  ylab("Number of new confirmed daily cases") +
+  geom_point() +
+  geom_line(aes(y = exp(pred_nbinomial)), size = 1) +
+  ggtitle("Regression plot for the number of new confirmed daily cases fitted with negative-binomial model",
+                       subtitle = "UK, June 2021 - ")
+```
+
+```{r Output2, echo = FALSE, message = FALSE, warning = FALSE}
+output$plot3 <- renderPlot({
+    if (input$class2 == "First") {
+      print(PoissonCases1)
+    } else if (input$class2 == "Second") {
+      print(PoissonCases2)
+    } else if (input$class2 == "Third"){
+      print(PoissonCases3)
+    }
+  })
+
+output$plot4 <- renderPlot({
+    if (input$class2 == "First") {
+      print(NBCases1)
+    } else if (input$class2 == "Second") {
+      print(NBCases2)
+    } else if (input$class2 == "Third"){
+      print(NBCases3)
+    }
+  })
+
+output$analysis3 <- renderText({
+  if (input$class2 == "First") {
+      ""
+    } else if (input$class2 == "Second") {
+      ""
+    } else if (input$class2 == "Third"){
+      ""
+    }
+  })
+
+output$analysis4 <- renderText({
+  if (input$class2 == "First") {
+      ""
+    } else if (input$class2 == "Second") {
+      ""
+    } else if (input$class2 == "Third"){
+      ""
+    }
+  })
+```
+
+## Impact of lockdown on behavioural indicators
+
+We are now going to look at how did people's behaviour change during lockdowns. We are going to use data from [Google Community Mobility Reports](https://www.google.com/covid19/mobility/index.html?hl=en), which collects Location History from android mobile devices to chart movement trends across different categories of places.
+
+```{r Page3, echo=FALSE, message = FALSE, warning = FALSE}
+mainPanel(width = 15,
+      selectInput("class3", "Plot:",
+                   c("Residential", "Workplaces", "Transit Stations", "Grocery/Pharmacy")
+      ),
+      conditionalPanel("input.class3 === 'Residential'",
+                    h4("Percentage Change in Frequency that People Visit Residential Places"),
+                    p("The plot shows how did the measurement of activity in the residential places change compared to the baseline period (UK, Jan 3 - Feb 6, 2020) expressed as a percentage." )
+      ),
+      conditionalPanel("input.class3 === 'Workplaces'",
+                     h4("Percentage Change in Frequency that People Visit Workplaces"),
+                     p("The plot shows how did the measurement of activity in the workplaces change compared to the baseline period (UK, Jan 3 - Feb 6, 2020) expressed as a percentage.")
+      ),
+      conditionalPanel("input.class3 === 'Transit Stations'",
+                     h4("Percentage Change in Frequency that People Visit Residential Places"),
+                     p("This bar chart gives an overall idea of the percentage change in frequency that people visit transit stations.")
+      ),
+      conditionalPanel("input.class3 === 'Grocery/Pharmacy'",
+                     h4("Percentage Change in Frequency that People Visit Grocery or Pharmacy"),
+                     p("This bar chart gives an overall idea of the percentage change in frequency that people visit grocery or pharmacy.")
+     ),
+        plotOutput("plot5", height = 500),
+        textOutput("analysis5")
+ )
+```
+
+```{r Plot5, echo = FALSE, message = FALSE, warning = FALSE}
+UKBehaveData <- {UkData %>% 
+    select(date, confirmed, daily_confirmed, gcmr_residential, gcmr_workplaces, gcmr_transit_stations, gcmr_grocery_pharmacy) }
+UKBehaveData <- UKBehaveData %>%
+  mutate(Weekdays = weekdays(date))
+
+PlotResidentialDate <- {UKBehaveData %>% 
+    ggplot(aes(x = date, y = gcmr_residential, color = Weekdays))} + 
+    geom_point() + 
+    xlab("Date") +
+    ylab("Activity in residences (% change)") +
+    ggtitle("Percentage change of activity in residences from baseline (UK)", 
+                subtitle = "Drawn from Google Community Mobility Reports") +
+    scale_x_date(date_breaks = "months", date_labels = "%b-%y")
+
+PlotWorkplacesDate <- {UKBehaveData %>% 
+    ggplot(aes(x = date, y = gcmr_workplaces, color = Weekdays))} + 
+    geom_point() + 
+    xlab("Date") +
+    ylab("Activity in workplaces (% change)") +
+    ggtitle("Percentage change of activity in workplaces from baseline (UK)", 
+                subtitle = "Drawn from Google Community Mobility Reports") +
+    scale_x_date(date_breaks = "months", date_labels = "%b-%y")
+
+PlotTransitDate <- {UKBehaveData %>% 
+    ggplot(aes(x = date, y = gcmr_transit_stations, color = Weekdays))} + 
+    geom_point() + 
+    xlab("Date") +
+    ylab("Activity in transit stations (% change)") +
+    ggtitle("Percentage change of activity in transit stations from baseline (UK)", 
+                subtitle = "Drawn from Google Community Mobility Reports") +
+    scale_x_date(date_breaks = "months", date_labels = "%b-%y")
+
+PlotGroceryDate <- {UKBehaveData %>% 
+    ggplot(aes(x = date, y = gcmr_grocery_pharmacy, color = Weekdays))} + 
+    geom_point() + 
+    xlab("Date") +
+    ylab("Activity in groceries or pharmacies (% change)") +
+    ggtitle("Percentage change of activity in groceries or pharmacies from baseline (UK)", 
+                subtitle = "Drawn from Google Community Mobility Reports") +
+    scale_x_date(date_breaks = "months", date_labels = "%b-%y")
+```
+
+```{r Output3, echo = FALSE}
+output$plot5 <- renderPlot({
+    if (input$class3 == "Residential") {
+      print(PlotResidentialDate)
+    } else if (input$class3 == "Workplaces") {
+      print(PlotWorkplacesDate)
+    } else if (input$class3 == "Transit Stations"){
+      print(PlotTransitDate)
+    } else if (input$class3 == "Grocery/Pharmacy"){
+      print(PlotGroceryDate)
+    }
+  })
+
+output$analysis5 <- renderText({
+    if (input$class3 == "Residential") {
+      ""
+    } else if (input$class3 == "Workplaces") {
+      ""
+    } else if (input$class3 == "Transit Stations"){
+      ""
+    } else if (input$class3 == "Grocery/Pharmacy"){
+      ""
+    }
+  })
+```
+
+## References
+::: {#refs}
+:::
